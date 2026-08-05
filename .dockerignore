@@ -1,0 +1,12 @@
+.git
+.gitignore
+.github
+web/node_modules
+web/dist
+internal/ui/dist
+data
+config.yaml
+*.md
+scripts
+deploy
+VERSION
