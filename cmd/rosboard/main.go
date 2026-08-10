@@ -40,6 +40,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
+	if cfg.MigrationPending && cfg.Path != "" {
+		if err := config.Save(cfg.Path, cfg); err != nil {
+			log.Fatalf("save migrated config: %v", err)
+		}
+	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		log.Fatalf("create data dir: %v", err)
@@ -62,13 +67,14 @@ func main() {
 	defer cancel()
 
 	var manager *service.MonitorManager
-	if cfg.RouterOSConfigured() {
+	if cfg.RouterOSConfigured() || cfg.MosDNS.Configured() {
 		manager, err = service.NewMonitorManager(cfg, storage, logger)
 		if err != nil {
 			log.Fatalf("open monitor stores: %v", err)
 		}
 		go manager.Start(ctx)
-	} else {
+	}
+	if !cfg.RouterOSConfigured() {
 		logger.Print("routeros is not configured, serving setup UI")
 	}
 
