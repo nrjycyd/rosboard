@@ -30,6 +30,7 @@ import type {
   Overview,
   PolicyStat,
   ProtocolHistorySample,
+  ProtocolResponse,
   ProtocolStat,
   RouteStat,
   RateSample,
@@ -63,6 +64,7 @@ type CollectionDraft = {
   sampleRetentionHours: number
 }
 type RecognitionDraft = {
+  protocolAnalysis: { enabled: boolean }
   mosdns: { enabled: boolean; baseUrl: string; syncIntervalMinutes: number }
   featureLibrary: { enabled: boolean; sourceUrl: string; refreshIntervalHours: number; matchWindowMinutes: number }
 }
@@ -242,6 +244,9 @@ function collectionDraftFromSettings(settings: SettingsResponse): CollectionDraf
 
 function recognitionDraftFromSettings(settings: SettingsResponse): RecognitionDraft {
   return {
+    protocolAnalysis: {
+      enabled: settings?.protocolAnalysis?.enabled !== false,
+    },
     mosdns: {
       enabled: settings.mosdns.enabled,
       baseUrl: mosDNSAddressFromBaseURL(settings.mosdns.baseUrl),
@@ -355,14 +360,14 @@ function normalizeInterface(item: InterfaceStatus): InterfaceStatus {
   return { ...item, category: item.category || (type === 'loopback' ? 'system' : type === 'ether' ? 'physical' : 'logical'), relations: item.relations ?? [] }
 }
 
-type MonitorSummaryItem = [string, string | number]
+type MonitorSummaryItem = [string, string | number, string?]
 
 function MonitorSummaryBar(props: { items: MonitorSummaryItem[]; ariaLabel: string }) {
   return (
     <div className="monitor-scope-summary" aria-label={props.ariaLabel}>
-      {props.items.map(([label, value]) => (
+      {props.items.map(([label, value, compactLabel]) => (
         <span key={label}>
-          <small>{label}</small>
+          <small><b>{label}</b><i>{compactLabel ?? label}</i></small>
           <strong>{value}</strong>
         </span>
       ))}
@@ -376,8 +381,8 @@ function TerminalScopeSummaryBar({ summary }: { summary: TerminalScopeSummary })
     ['连接', summary.connectionCount],
     ['↑', formatBits(summary.currentUploadBps)],
     ['↓', formatBits(summary.currentDownloadBps)],
-    ['活动累计↑', formatBytes(summary.activeUploadBytes)],
-    ['活动累计↓', formatBytes(summary.activeDownloadBytes)],
+    ['活动累计↑', formatBytes(summary.activeUploadBytes), '累↑'],
+    ['活动累计↓', formatBytes(summary.activeDownloadBytes), '累↓'],
   ]
   return <MonitorSummaryBar items={items} ariaLabel="终端概览" />
 }
@@ -620,6 +625,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
     savePanelPreferences(next)
   }
   const hasDashboard = dashboard !== null
+  const protocolAnalysisEnabled = settings?.protocolAnalysis?.enabled !== false
 
 	const refreshSettingsAfterDeviceSave = async () => {
 		const response = await fetch('/api/settings', { cache: 'no-store' })
@@ -842,6 +848,17 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
   }, [activeView, dashboardRefreshMs, refreshNonce, restartPending, selectedDeviceID])
 
   useEffect(() => {
+    if (settings?.protocolAnalysis?.enabled !== false || activeView !== 'protocols') return
+    setActiveView('policies')
+    setSelectedTerminalID(null)
+  }, [activeView, settings?.protocolAnalysis?.enabled])
+
+  useEffect(() => {
+    if (protocolAnalysisEnabled || terminalTab !== 'flows') return
+    setTerminalTab('basic')
+  }, [protocolAnalysisEnabled, terminalTab])
+
+  useEffect(() => {
     if (activeView !== 'overview' && activeView !== 'resource' || dashboardRefreshMs <= 0) return
     let cancelled = false
     let refreshing = false
@@ -1034,7 +1051,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
   const detailMode = activeView === 'terminals' && selectedTerminalID && terminalDetail
   const connectionDetailMode = Boolean(detailMode && terminalTab === 'connections')
   const terminalListMode = Boolean(activeView === 'terminals' && !detailMode)
-  const statusActive = activeView === 'interfaces' || activeView === 'terminals' || activeView === 'protocols' || activeView === 'policies' || activeView === 'load' || activeView === 'resource' || activeView === 'routes' || activeView === 'dhcp'
+  const statusActive = activeView === 'interfaces' || activeView === 'terminals' || (activeView === 'protocols' && protocolAnalysisEnabled) || activeView === 'policies' || activeView === 'load' || activeView === 'resource' || activeView === 'routes' || activeView === 'dhcp'
   const monitorTabs: MonitorTabConfig | null = activeView === 'interfaces'
     ? {
         value: interfaceCategory,
@@ -1053,7 +1070,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
         ? {
             value: activeView,
             ariaLabel: '流量监控页面',
-            options: [{ value: 'protocols', label: '协议统计' }, { value: 'policies', label: '策略统计' }],
+            options: [...(protocolAnalysisEnabled ? [{ value: 'protocols', label: '协议统计' }] : []), { value: 'policies', label: '策略统计' }],
             onChange: (value) => { setActiveView(value as ActiveView); setSelectedTerminalID(null) },
           }
         : activeView === 'dhcp' || activeView === 'routes'
@@ -1077,9 +1094,11 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
       ? 'topbar overview-topbar'
       : activeView === 'fleet'
         ? 'topbar fleet-topbar'
-        : monitorTabs
-          ? activeView === 'terminals' ? 'topbar terminal-topbar monitor-topbar' : 'topbar monitor-topbar'
-          : 'topbar'
+        : activeView === 'settings'
+          ? 'topbar settings-topbar'
+          : monitorTabs
+            ? activeView === 'terminals' ? 'topbar terminal-topbar monitor-topbar' : 'topbar monitor-topbar'
+            : 'topbar'
   const settingsSections: Array<{ key: SettingsSection; label: string; icon: IconName }> = [
     { key: 'connection', label: '设备管理', icon: 'router' },
     { key: 'collection', label: '采集设置', icon: 'refresh' },
@@ -1170,7 +1189,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
               >
                 <NavLabel icon="terminal" label="终端监控" />
               </button>
-              <button type="button" className={activeView === 'protocols' || activeView === 'policies' ? 'submenu-item active' : 'submenu-item'} onClick={() => { setActiveView('protocols'); setSelectedTerminalID(null); setSidebarOpen(false) }}><NavLabel icon="traffic" label="流量监控" /></button>
+              <button type="button" className={activeView === 'policies' || (activeView === 'protocols' && protocolAnalysisEnabled) ? 'submenu-item active' : 'submenu-item'} onClick={() => { setActiveView(protocolAnalysisEnabled ? 'protocols' : 'policies'); setSelectedTerminalID(null); setSidebarOpen(false) }}><NavLabel icon="traffic" label="流量监控" /></button>
               <button type="button" className={activeView === 'dhcp' || activeView === 'routes' ? 'submenu-item active' : 'submenu-item'} onClick={() => { setActiveView('dhcp'); setSelectedTerminalID(null); setSidebarOpen(false) }}><NavLabel icon="network" label="网络服务" /></button>
               <button type="button" className={activeView === 'resource' || activeView === 'load' ? 'submenu-item active' : 'submenu-item'} onClick={() => { setActiveView('resource'); setSelectedTerminalID(null); setSidebarOpen(false) }}><NavLabel icon="runtime" label="系统运行" /></button>
             </div> : null}
@@ -1259,55 +1278,60 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
             {activeView === 'terminals' && !detailMode && dashboard ? (
               <TerminalScopeSummaryBar summary={dashboard.terminalScopeSummaries?.[terminalFamily] ?? emptyTerminalScopeSummary} />
             ) : null}
-            {activeView === 'overview' && !detailMode ? (
-              <OverviewRangePills value={trafficWindow} onChange={setTrafficWindow} />
-            ) : null}
-            {activeView !== 'fleet' && globalWarnings.length ? (
-              <button type="button" className="system-ok system-alerting global-warning-toggle" aria-expanded={warningsExpanded} aria-controls="global-warning-list" onClick={() => setWarningsExpanded((value) => !value)}><i />{alertCount} 项告警</button>
-            ) : activeView !== 'fleet' ? (
-              <span className={dashboard?.alerts?.length ? 'system-ok system-alerting' : 'system-ok'}><i />{dashboard?.alerts?.length ? `${dashboard.alerts.length} 项告警` : '系统正常'}</span>
-            ) : null}
-            {activeView !== 'fleet' ? <span className="last-updated">最后更新 {relativeUpdateTime(dashboard?.overview.updatedAt ?? '')}</span> : null}
-            {activeView === 'terminals' && !detailMode ? <input className="search-input terminal-topbar-search-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="备注 / 名称 / IP / MAC" aria-label="搜索终端" /> : null}
-            {activeView === 'fleet' ? <input className="search-input fleet-topbar-search-input" value={fleetQuery} onChange={(event) => setFleetQuery(event.target.value)} placeholder="搜索设备名称、型号、版本或 IP" aria-label="搜索设备" /> : null}
-            <div className="theme-control">
-              <button
-                type="button"
-                className="theme-button"
-                aria-label={`修改主题，当前为${panelThemeOptions.find((option) => option.value === panelPreferences.theme)?.label || '明亮'}`}
-                aria-haspopup="menu"
-                aria-expanded={themeMenuOpen}
-                onClick={() => setThemeMenuOpen((value) => !value)}
-              >
-                <Icon name="palette" />
-                <span>主题</span>
-              </button>
-              {themeMenuOpen ? (
-                <div className="theme-menu" role="menu" aria-label="主题外观">
-                  <div className="theme-menu-head"><strong>主题外观</strong><small>即时应用并保存到当前浏览器</small></div>
-                  {panelThemeOptions.map((option) => (
-                    <button
-                      key={option.value}
-                      type="button"
-                      className={panelPreferences.theme === option.value ? 'theme-menu-option active' : 'theme-menu-option'}
-                      role="menuitemradio"
-                      aria-checked={panelPreferences.theme === option.value}
-                      onClick={() => {
-                        updatePanelPreferences({ ...panelPreferences, theme: option.value })
-                        setThemeMenuOpen(false)
-                      }}
-                    >
-                      <span className={`theme-preview theme-preview-${option.value}`} aria-hidden="true"><i /><i /><i /></span>
-                      <span><strong>{option.label}</strong><small>{option.description}</small></span>
-                    </button>
-                  ))}
-                </div>
+            <div className="topbar-action-controls">
+              {activeView === 'overview' && !detailMode ? (
+                <OverviewRangePills value={trafficWindow} onChange={setTrafficWindow} />
               ) : null}
+              {activeView !== 'fleet' && globalWarnings.length ? (
+                <button type="button" className="system-ok system-alerting global-warning-toggle" aria-expanded={warningsExpanded} aria-controls="global-warning-list" onClick={() => setWarningsExpanded((value) => !value)}><i /><span className="status-label">{alertCount} 项告警</span><span className="status-count" aria-hidden="true">{alertCount}</span></button>
+              ) : activeView !== 'fleet' ? (
+                <span className={dashboard?.alerts?.length ? 'system-ok system-alerting' : 'system-ok'}><i /><span className="status-label">{dashboard?.alerts?.length ? `${dashboard.alerts.length} 项告警` : '系统正常'}</span></span>
+              ) : null}
+              {activeView !== 'fleet' ? <span className="last-updated">最后更新 {relativeUpdateTime(dashboard?.overview.updatedAt ?? '')}</span> : null}
+              {activeView === 'terminals' && !detailMode ? <input className="search-input terminal-topbar-search-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="备注 / 名称 / IP / MAC" aria-label="搜索终端" /> : null}
+              {activeView === 'fleet' ? <input className="search-input fleet-topbar-search-input" value={fleetQuery} onChange={(event) => setFleetQuery(event.target.value)} placeholder="搜索设备名称、型号、版本或 IP" aria-label="搜索设备" /> : null}
+              <div className="theme-control">
+                <button
+                  type="button"
+                  className="theme-button"
+                  aria-label={`修改主题，当前为${panelThemeOptions.find((option) => option.value === panelPreferences.theme)?.label || '明亮'}`}
+                  aria-haspopup="menu"
+                  aria-expanded={themeMenuOpen}
+                  onClick={() => setThemeMenuOpen((value) => !value)}
+                >
+                  <Icon name="palette" />
+                  <span>主题</span>
+                </button>
+                {themeMenuOpen ? (
+                  <div className="theme-menu" role="menu" aria-label="主题外观">
+                    <div className="theme-menu-head"><strong>主题外观</strong><small>即时应用并保存到当前浏览器</small></div>
+                    {panelThemeOptions.map((option) => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={panelPreferences.theme === option.value ? 'theme-menu-option active' : 'theme-menu-option'}
+                        role="menuitemradio"
+                        aria-checked={panelPreferences.theme === option.value}
+                        onClick={() => {
+                          updatePanelPreferences({ ...panelPreferences, theme: option.value })
+                          setThemeMenuOpen(false)
+                        }}
+                      >
+                        <span className={`theme-preview theme-preview-${option.value}`} aria-hidden="true"><i /><i /><i /></span>
+                        <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button type="button" className="icon-button" aria-label="立即刷新" onClick={() => setRefreshNonce((value) => value + 1)}><Icon name="refresh" /></button>
+              <select className="refresh-period-select refresh-period-select-desktop" value={dashboardRefreshMs} onChange={(event) => setDashboardRefreshMs(Number(event.target.value))} aria-label="全局自动刷新">
+                <option value={0}>停止刷新</option><option value={1000}>自动刷新（1 秒）</option><option value={3000}>自动刷新（3 秒）</option><option value={5000}>自动刷新（5 秒）</option><option value={10000}>自动刷新（10 秒）</option>
+              </select>
+              <select className="refresh-period-select refresh-period-select-mobile" value={dashboardRefreshMs} onChange={(event) => setDashboardRefreshMs(Number(event.target.value))} aria-label="全局自动刷新">
+                <option value={0}>停</option><option value={1000}>1s</option><option value={3000}>3s</option><option value={5000}>5s</option><option value={10000}>10s</option>
+              </select>
             </div>
-            <button type="button" className="icon-button" aria-label="立即刷新" onClick={() => setRefreshNonce((value) => value + 1)}><Icon name="refresh" /></button>
-            <select value={dashboardRefreshMs} onChange={(event) => setDashboardRefreshMs(Number(event.target.value))} aria-label="全局自动刷新">
-              <option value={0}>停止刷新</option><option value={1000}>自动刷新（1 秒）</option><option value={3000}>自动刷新（3 秒）</option><option value={5000}>自动刷新（5 秒）</option><option value={10000}>自动刷新（10 秒）</option>
-            </select>
           </div>
         </header>
 
@@ -1346,7 +1370,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
 
         {activeView === 'load' && dashboard ? <LoadPage samples={loadSamples} window={loadWindow} onWindowChange={setLoadWindow} /> : null}
         {activeView === 'resource' && dashboard ? <ResourcePage overview={dashboard.overview} /> : null}
-        {activeView === 'protocols' && dashboard ? <ProtocolPage protocols={dashboard.protocols ?? []} deviceID={selectedDeviceID} /> : null}
+        {activeView === 'protocols' && protocolAnalysisEnabled && dashboard ? <ProtocolPage protocols={dashboard.protocols ?? []} deviceID={selectedDeviceID} /> : null}
         {activeView === 'policies' && dashboard ? <PolicyPage policies={dashboard.policies ?? []} /> : null}
         {activeView === 'dhcp' && dashboard ? <DHCPPage dhcp={dashboard.dhcp ?? { servers: [], pools: [] }} /> : null}
         {activeView === 'routes' && dashboard ? <RoutesPage routes={dashboard.routes ?? []} /> : null}
@@ -1417,6 +1441,7 @@ function PanelApp(props: { username: string; onAuthenticationChanged: () => void
           <TerminalDetailPage
             detail={terminalDetail}
             activeTab={terminalTab}
+            protocolAnalysisEnabled={protocolAnalysisEnabled}
             connectionFamily={connectionFamily}
             scope={detailScope}
             onBack={() => {
@@ -2183,7 +2208,8 @@ function RecognitionSettingsForm(props: { settings: SettingsResponse; saving: bo
   const [draft, setDraft] = useState<RecognitionDraft>(() => recognitionDraftFromSettings(props.settings))
   useEffect(() => setDraft(recognitionDraftFromSettings(props.settings)), [props.settings])
   return <form className="settings-form recognition-settings-form" onSubmit={(event) => { event.preventDefault(); void props.onSave(draft) }}>
-    <fieldset className="settings-fieldset wide">
+    <label className="checkbox-label wide protocol-analysis-toggle"><input type="checkbox" checked={draft.protocolAnalysis.enabled} onChange={(event) => setDraft((current) => ({ ...current, protocolAnalysis: { enabled: event.target.checked } }))} /><span>启用协议分析</span></label>
+    <fieldset className="settings-fieldset wide" disabled={!draft.protocolAnalysis.enabled}>
       <legend>MosDNS DNS 日志对接</legend>
       <label className="checkbox-label"><input type="checkbox" checked={draft.mosdns.enabled} onChange={(event) => setDraft((current) => ({ ...current, mosdns: { ...current.mosdns, enabled: event.target.checked } }))} /><span>启用 MosDNS 解析日志同步</span></label>
       <label><span>MosDNS 地址</span><input type="text" inputMode="decimal" autoComplete="off" disabled={!draft.mosdns.enabled} required={draft.mosdns.enabled} value={draft.mosdns.baseUrl} onChange={(event) => setDraft((current) => ({ ...current, mosdns: { ...current.mosdns, baseUrl: event.target.value } }))} placeholder="10.0.0.3" /></label>
@@ -2197,7 +2223,7 @@ function RecognitionSettingsForm(props: { settings: SettingsResponse; saving: bo
         <SettingItem label="运行状态" value={props.settings.mosdns.lastError ? `异常：${props.settings.mosdns.lastError}` : props.settings.mosdns.enabled ? '已启用' : '已关闭'} wide />
       </div>
     </fieldset>
-    <fieldset className="settings-fieldset wide">
+    <fieldset className="settings-fieldset wide" disabled={!draft.protocolAnalysis.enabled}>
       <legend>协议特征库</legend>
       <label className="checkbox-label"><input type="checkbox" checked={draft.featureLibrary.enabled} onChange={(event) => setDraft((current) => ({ ...current, featureLibrary: { ...current.featureLibrary, enabled: event.target.checked } }))} /><span>启用域名/IP 应用识别</span></label>
       <label><span>特征库地址</span><input type="url" required={draft.featureLibrary.enabled} value={draft.featureLibrary.sourceUrl} onChange={(event) => setDraft((current) => ({ ...current, featureLibrary: { ...current.featureLibrary, sourceUrl: event.target.value } }))} /></label>
@@ -2710,8 +2736,8 @@ function ProtocolPage(props: { protocols: ProtocolStat[]; deviceID: string }) {
     const load = async () => {
       const response = await fetch(scopedURL('/api/protocols?window=30m', props.deviceID))
       if (!response.ok) return
-      const payload = (await response.json()) as { history: ProtocolHistorySample[] }
-      if (!cancelled) setHistory(payload.history)
+      const payload = (await response.json()) as ProtocolResponse
+      if (!cancelled) setHistory(payload.history ?? [])
     }
     load().catch(() => undefined)
     const timer = window.setInterval(() => load().catch(() => undefined), 30000)
@@ -3216,23 +3242,25 @@ function ConnectionTable(props: { state: ConnectionTableState; showStatus: boole
 function TerminalDetailPage(props: {
   detail: TerminalDetail
   activeTab: TerminalTab
+  protocolAnalysisEnabled: boolean
   connectionFamily: ConnectionFamily
   scope: TerminalFamily
   onBack: () => void
   onTabChange: (value: TerminalTab) => void
   onConnectionFamilyChange: (value: ConnectionFamily) => void
 }) {
+  const activeTab = !props.protocolAnalysisEnabled && props.activeTab === 'flows' ? 'basic' : props.activeTab
   const isRouterConntrack = props.detail.terminal.id === 'routeros:self'
   const scopedConnections = props.scope === 'all' ? props.detail.connections : props.detail.connections.filter((item) => item.family === props.scope)
   const scopedEgressInterfaces = Array.from(new Set(scopedConnections.flatMap((item) => item.egressInterfaces ?? []))).sort((left, right) => left.localeCompare(right, 'zh-CN', { numeric: true }))
   const repliedConnections = scopedConnections.filter((item) => item.seenReply).length
   const unrepliedConnections = scopedConnections.length - repliedConnections
   const summary = props.scope === 'all' ? props.detail.terminal : (props.detail.familySummaries?.[props.scope] ?? props.detail.terminal)
-  const visibleFlows = props.scope === 'all' ? props.detail.flowCategories : (props.detail.familyFlows?.[props.scope] ?? [])
+  const visibleFlows = props.protocolAnalysisEnabled ? props.scope === 'all' ? props.detail.flowCategories : (props.detail.familyFlows?.[props.scope] ?? []) : []
   const connectionTable = useConnectionTableState({ connections: props.detail.connections, scope: props.scope, family: props.connectionFamily, onFamilyChange: props.onConnectionFamilyChange, showStatus: isRouterConntrack })
 
   return (
-    <section className={props.activeTab === 'connections' ? 'detail-page detail-page-connections' : 'detail-page'}>
+    <section className={activeTab === 'connections' ? 'detail-page detail-page-connections' : 'detail-page'}>
       <div className="detail-page-head">
         <div className="detail-identity">
           <div className="detail-identity-line">
@@ -3256,15 +3284,15 @@ function TerminalDetailPage(props: {
         </div>
       </div>
 
-      <div className={`tab-row detail-tabs${props.scope === 'all' ? ' has-history' : ''}`}>
-        <TabButton label="基础信息" active={props.activeTab === 'basic'} onClick={() => props.onTabChange('basic')} />
-        <TabButton label={isRouterConntrack ? '跟踪详情' : '连接详情'} active={props.activeTab === 'connections'} onClick={() => props.onTabChange('connections')} />
-        <TabButton label="流量分布" active={props.activeTab === 'flows'} onClick={() => props.onTabChange('flows')} />
-        {props.scope === 'all' ? <TabButton label="历史记录" active={props.activeTab === 'history'} onClick={() => props.onTabChange('history')} /> : null}
+      <div className={`tab-row detail-tabs${props.scope === 'all' ? ' has-history' : ''}${props.protocolAnalysisEnabled ? '' : ' without-flows'}`}>
+        <TabButton label="基础信息" active={activeTab === 'basic'} onClick={() => props.onTabChange('basic')} />
+        <TabButton label={isRouterConntrack ? '跟踪详情' : '连接详情'} active={activeTab === 'connections'} onClick={() => props.onTabChange('connections')} />
+        {props.protocolAnalysisEnabled ? <TabButton label="流量分布" active={activeTab === 'flows'} onClick={() => props.onTabChange('flows')} /> : null}
+        {props.scope === 'all' ? <TabButton label="历史记录" active={activeTab === 'history'} onClick={() => props.onTabChange('history')} /> : null}
       </div>
 
-      <section className={props.activeTab === 'connections' ? 'panel detail-panel detail-panel-connections' : 'panel detail-panel'}>
-        {props.activeTab === 'basic' ? (
+      <section className={activeTab === 'connections' ? 'panel detail-panel detail-panel-connections' : 'panel detail-panel'}>
+        {activeTab === 'basic' ? (
           <div className="detail-grid">
             <DetailItem label="设备名称" value={summary.displayName} />
             <DetailItem label="自动识别名称" value={summary.autoName || '暂未识别'} />
@@ -3287,9 +3315,9 @@ function TerminalDetailPage(props: {
           </div>
         ) : null}
 
-        {props.activeTab === 'connections' ? <ConnectionTable state={connectionTable} showStatus={isRouterConntrack} emptyLabel={`当前筛选范围没有 ${connectionTable.selectedFamily === 'all' ? '活动' : connectionTable.selectedFamily.toUpperCase()} ${isRouterConntrack ? '跟踪条目' : '连接详情'}`} /> : null}
+        {activeTab === 'connections' ? <ConnectionTable state={connectionTable} showStatus={isRouterConntrack} emptyLabel={`当前筛选范围没有 ${connectionTable.selectedFamily === 'all' ? '活动' : connectionTable.selectedFamily.toUpperCase()} ${isRouterConntrack ? '跟踪条目' : '连接详情'}`} /> : null}
 
-        {props.activeTab === 'flows' ? (
+        {activeTab === 'flows' && props.protocolAnalysisEnabled ? (
           <div>
             <p className="table-note">按当前活动连接的协议和端口估算，不等同于 DPI 应用识别。</p>
             <div className="table-scroll">
@@ -3327,7 +3355,7 @@ function TerminalDetailPage(props: {
           </div>
         ) : null}
 
-        {props.activeTab === 'history' ? (
+        {activeTab === 'history' ? (
           <div>
             <p className="table-note">每分钟保存一条面板本地累计快照。</p>
             <div className="table-scroll">
